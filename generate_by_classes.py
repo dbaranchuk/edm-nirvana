@@ -20,6 +20,17 @@ import dnnlib
 from torch_utils import distributed as dist
 from training import nirvana_utils
 
+
+#----------------------------------------------------------------------------
+# Trajectory deviation
+
+def lineseg_dist(p, a, b):
+    t = np.dot(p - a, b - a) / (np.sum(((b - a) ** 2)))
+    t = min(max(t, 0), 1)
+    dist = np.sqrt(np.sum((a + t * (b - a) - p) ** 2))
+    return dist
+
+
 #----------------------------------------------------------------------------
 # Proposed EDM sampler (Algorithm 2).
 
@@ -36,10 +47,15 @@ def edm_sampler(
     step_indices = torch.arange(num_steps, dtype=torch.float64, device=latents.device)
     t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
     t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
+    print("t_steps", t_steps)
 
     # Main sampling loop.
+    x_next_trajectory = []
+    denoised_trajectory = []
+
     x_next = latents.to(torch.float64) * t_steps[0]
     for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])): # 0, ..., N-1
+        x_next_trajectory.append(x_next)
         x_cur = x_next
 
         # Increase noise temporarily.
@@ -49,6 +65,8 @@ def edm_sampler(
 
         # Euler step.
         denoised = net(x_hat, t_hat, class_labels).to(torch.float64)
+        denoised_trajectory.append(denoised)
+
         d_cur = (x_hat - denoised) / t_hat
         x_next = x_hat + (t_next - t_hat) * d_cur
 
@@ -58,6 +76,10 @@ def edm_sampler(
             d_prime = (x_next - denoised) / t_next
             x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
 
+    x_next_trajectory.append(x_next)
+    x_next_trajectory = torch.stack(x_next_trajectory)
+    denoised_trajectory = torch.stack(denoised_trajectory)
+    print(x_next_trajectory.shape, denoised_trajectory.shape)
     return x_next
 
 #----------------------------------------------------------------------------
@@ -219,7 +241,7 @@ def parse_int_list(s):
 @click.option('--outdir',                  help='Where to save the output images', metavar='DIR',                   type=str, required=True)
 @click.option('--seeds',                   help='Random seeds (e.g. 1,2,5-10)', metavar='LIST',                     type=parse_int_list, default='0-63', show_default=True)
 @click.option('--subdirs',                 help='Create subdirectory for every 1000 seeds',                         is_flag=True)
-@click.option('--class', 'class_idx',      help='Class label  [default: random]', metavar='INT',                    type=click.IntRange(min=0), default=None)
+# @click.option('--class', 'class_idx',      help='Class label  [default: random]', metavar='INT',                    type=click.IntRange(min=0), default=None)
 @click.option('--batch', 'max_batch_size', help='Maximum batch size', metavar='INT',                                type=click.IntRange(min=1), default=64, show_default=True)
 
 @click.option('--steps', 'num_steps',      help='Number of sampling steps', metavar='INT',                          type=click.IntRange(min=1), default=18, show_default=True)
@@ -237,7 +259,7 @@ def parse_int_list(s):
 @click.option('--scaling',                 help='Ablate signal scaling s(t)', metavar='vp|none',                    type=click.Choice(['vp', 'none']))
 
 
-def main(network_pkl, outdir, subdirs, seeds, class_idx, max_batch_size, device=torch.device('cuda'), **sampler_kwargs):
+def main(network_pkl, outdir, subdirs, seeds, max_batch_size, device=torch.device('cuda'), **sampler_kwargs):
     """Generate random images using the techniques described in the paper
     "Elucidating the Design Space of Diffusion-Based Generative Models".
 
@@ -254,9 +276,8 @@ def main(network_pkl, outdir, subdirs, seeds, class_idx, max_batch_size, device=
         --network=https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-cifar10-32x32-cond-vp.pkl
     """
     dist.init()
-    num_batches = ((len(seeds) - 1) // (max_batch_size * dist.get_world_size()) + 1) * dist.get_world_size()
-    all_batches = torch.as_tensor(seeds).tensor_split(num_batches)
-    rank_batches = all_batches[dist.get_rank() :: dist.get_world_size()]
+    seeds = list(range(0, max_batch_size, 1))
+    rank_classes = list(range(0, net.label_dim, dist.get_rank()))
 
     # Rank 0 goes first.
     if dist.get_rank() != 0:
@@ -273,23 +294,18 @@ def main(network_pkl, outdir, subdirs, seeds, class_idx, max_batch_size, device=
 
     # Loop over batches.
     dist.print0(f'Generating {len(seeds)} images to "{outdir}"...')
-    for batch_seeds in tqdm.tqdm(rank_batches, unit='batch', disable=(dist.get_rank() != 0)):
+    for class_idx in tqdm.tqdm(rank_classes, unit='batch', disable=(dist.get_rank() != 0)):
         torch.distributed.barrier()
-        batch_size = len(batch_seeds)
+        batch_size = max_batch_size
         if batch_size == 0:
             continue
 
         # Pick latents and labels.
-        rnd = StackedRandomGenerator(device, batch_seeds)
+        rnd = StackedRandomGenerator(device, seeds)
         latents = rnd.randn([batch_size, net.img_channels, net.img_resolution, net.img_resolution], device=device)
         class_labels = None
         if net.label_dim:
-            # TODO: add probs to randint according to dinov2 distr
-            if path_to_label_distr:
-                label_distr = torch.from_numpy(np.load(path_to_label_distr)).to(torch.float)
-                labels = torch.multinomial(label_distr, batch_size, replacement=True)
-            else:
-                labels = rnd.randint(net.label_dim, size=[batch_size], device=device)
+            labels = rnd.randint(net.label_dim, size=[batch_size], device=device)
             class_labels = torch.eye(net.label_dim, device=device)[labels]
         if class_idx is not None:
             class_labels[:, :] = 0
