@@ -277,7 +277,7 @@ def main(network_pkl, outdir, subdirs, seeds, max_batch_size, device=torch.devic
     """
     dist.init()
     seeds = list(range(0, max_batch_size, 1))
-    rank_classes = list(range(0, net.label_dim, dist.get_rank()))
+    rank_classes = list(range(dist.get_rank(), net.label_dim, dist.get_world_size()))
 
     # Rank 0 goes first.
     if dist.get_rank() != 0:
@@ -307,9 +307,10 @@ def main(network_pkl, outdir, subdirs, seeds, max_batch_size, device=torch.devic
         if net.label_dim:
             labels = rnd.randint(net.label_dim, size=[batch_size], device=device)
             class_labels = torch.eye(net.label_dim, device=device)[labels]
-        if class_idx is not None:
-            class_labels[:, :] = 0
-            class_labels[:, class_idx] = 1
+        
+        assert class_idx is not None
+        class_labels[:, :] = 0
+        class_labels[:, class_idx] = 1
 
         # Generate images.
         sampler_kwargs = {key: value for key, value in sampler_kwargs.items() if value is not None}
