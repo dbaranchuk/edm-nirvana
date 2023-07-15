@@ -33,10 +33,10 @@ def trajectory_deviation(trajectory):
     line = end - start
     direction = trajectory - end
 
-    dots = torch.bmm(direction, line.transpose(0, 2, 1)) # [BxTx1]
+    dots = torch.bmm(direction, line.permute(0, 2, 1)) # [BxTx1]
     line_norm = line.norm(dim=-1, keepdim=True) # [BxTx1] 
     proj_point = dots * line / (line_norm ** 2) # [BxTx(C*H*W)] 
-    dist = torch.linalg.norm(trajectory, proj_point, dim=-1) 
+    dist = torch.linalg.norm(trajectory - proj_point, dim=-1) 
     return dist
 
 
@@ -90,8 +90,7 @@ def edm_sampler(
 
     sampling_deviation = trajectory_deviation(x_next_trajectory)
     denoised_deviation = trajectory_deviation(denoised_trajectory)
-    print(denoised_deviation.shape, sampling_deviation.shape)
-    return x_next
+    return x_next, sampling_deviation.cpu(), denoised_deviation.cpu()
 
 #----------------------------------------------------------------------------
 # Generalized ablation sampler, representing the superset of all sampling
@@ -327,7 +326,7 @@ def main(network_pkl, outdir, subdirs, seeds, max_batch_size, device=torch.devic
         sampler_kwargs = {key: value for key, value in sampler_kwargs.items() if value is not None}
         have_ablation_kwargs = any(x in sampler_kwargs for x in ['solver', 'discretization', 'schedule', 'scaling'])
         sampler_fn = ablation_sampler if have_ablation_kwargs else edm_sampler
-        images = sampler_fn(net, latents, class_labels, randn_like=rnd.randn_like, **sampler_kwargs)
+        images, sampling_deviation, denoised_deviation = sampler_fn(net, latents, class_labels, randn_like=rnd.randn_like, **sampler_kwargs)
 
         # Save images.
         images_np = (images * 127.5 + 128).clip(0, 255).to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
@@ -339,6 +338,9 @@ def main(network_pkl, outdir, subdirs, seeds, max_batch_size, device=torch.devic
                 PIL.Image.fromarray(image_np[:, :, 0], 'L').save(image_path)
             else:
                 PIL.Image.fromarray(image_np, 'RGB').save(image_path)
+        
+        torch.save(sampling_deviation, os.path.join(image_dir, "sampling_deviation.pt"))
+        torch.save(denoised_deviation, os.path.join(image_dir, "denoised_deviation.pt"))
 
     # Copy images to nirvana snapshot path
     if dist.get_rank() == 0:
