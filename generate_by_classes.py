@@ -47,7 +47,7 @@ def edm_sampler(
     step_indices = torch.arange(num_steps, dtype=torch.float64, device=latents.device)
     t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
     t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
-    print("t_steps", t_steps)
+    print("t_steps", len(t_steps), t_steps)
 
     # Main sampling loop.
     x_next_trajectory = []
@@ -320,8 +320,8 @@ def main(network_pkl, outdir, subdirs, seeds, max_batch_size, device=torch.devic
 
         # Save images.
         images_np = (images * 127.5 + 128).clip(0, 255).to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
-        for seed, image_np in zip(batch_seeds, images_np):
-            image_dir = os.path.join(outdir, f'{seed-seed%1000:06d}') if subdirs else outdir
+        for seed, image_np in zip(seeds, images_np):
+            image_dir = os.path.join(outdir, f'{class_idx:04d}')
             os.makedirs(image_dir, exist_ok=True)
             image_path = os.path.join(image_dir, f'{seed:06d}.png')
             if image_np.shape[2] == 1:
