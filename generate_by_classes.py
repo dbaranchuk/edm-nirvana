@@ -276,9 +276,6 @@ def main(network_pkl, outdir, subdirs, seeds, max_batch_size, device=torch.devic
         --network=https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-cifar10-32x32-cond-vp.pkl
     """
     dist.init()
-    seeds = list(range(0, max_batch_size, 1))
-    rank_classes = list(range(dist.get_rank(), net.label_dim, dist.get_world_size()))
-
     # Rank 0 goes first.
     if dist.get_rank() != 0:
         torch.distributed.barrier()
@@ -291,6 +288,9 @@ def main(network_pkl, outdir, subdirs, seeds, max_batch_size, device=torch.devic
     # Other ranks follow.
     if dist.get_rank() == 0:
         torch.distributed.barrier()
+
+    seeds = list(range(0, max_batch_size, 1))
+    rank_classes = list(range(dist.get_rank(), net.label_dim, dist.get_world_size()))
 
     # Loop over batches.
     dist.print0(f'Generating {len(seeds)} images to "{outdir}"...')
