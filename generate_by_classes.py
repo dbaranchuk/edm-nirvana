@@ -30,13 +30,14 @@ def trajectory_deviation(trajectory):
     trajectory = trajectory.flatten(start_dim=2) # [TxBx(C*H*W)]
     trajectory = trajectory.permute(1, 0, 2) # [BxTx(C*H*W)]
     start, end = trajectory[:, :1], trajectory[:, -1:]
-    line = end - start
-    direction = trajectory - end
-
+    
+    line = (start - end).type(torch.float64)
+    direction = (trajectory - end).type(torch.float64)
+    line /= line.norm(dim=-1, keepdim=True) # [Bx1x1]
+    
     dots = torch.bmm(direction, line.permute(0, 2, 1)) # [BxTx1]
-    line_norm = line.norm(dim=-1, keepdim=True) # [BxTx1] 
-    proj_point = dots * line / (line_norm ** 2) # [BxTx(C*H*W)] 
-    dist = torch.linalg.norm(trajectory - proj_point, dim=-1) 
+    proj_point = dots * line # [BxTx(C*H*W)]
+    dist = torch.linalg.norm(direction - proj_point, dim=-1) 
     return dist
 
 
