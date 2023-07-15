@@ -24,10 +24,19 @@ from training import nirvana_utils
 #----------------------------------------------------------------------------
 # Trajectory deviation
 
-def lineseg_dist(p, a, b):
-    t = np.dot(p - a, b - a) / (np.sum(((b - a) ** 2)))
-    t = min(max(t, 0), 1)
-    dist = np.sqrt(np.sum((a + t * (b - a) - p) ** 2))
+def trajectory_deviation(trajectory):
+    """ L2 distance from the x_t point to the line [x_T, x_0] """
+    # trajectory [TxBxCxHxW]
+    trajectory = trajectory.flatten(start_dim=2) # [TxBx(C*H*W)]
+    trajectory = trajectory.permute(1, 0, 2) # [BxTx(C*H*W)]
+    start, end = trajectory[:, :1], trajectory[:, -1:]
+    line = end - start
+    direction = trajectory - end
+
+    dots = torch.bmm(direction, line.transpose(0, 2, 1)) # [BxTx1]
+    line_norm = line.norm(dim=-1, keepdim=True) # [BxTx1] 
+    proj_point = dots * line / (line_norm ** 2) # [BxTx(C*H*W)] 
+    dist = torch.linalg.norm(trajectory, proj_point, dim=-1) 
     return dist
 
 
@@ -47,7 +56,6 @@ def edm_sampler(
     step_indices = torch.arange(num_steps, dtype=torch.float64, device=latents.device)
     t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
     t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
-    print("t_steps", len(t_steps), t_steps)
 
     # Main sampling loop.
     x_next_trajectory = []
@@ -79,7 +87,10 @@ def edm_sampler(
     x_next_trajectory.append(x_next)
     x_next_trajectory = torch.stack(x_next_trajectory)
     denoised_trajectory = torch.stack(denoised_trajectory)
-    print(x_next_trajectory.shape, denoised_trajectory.shape)
+
+    sampling_deviation = trajectory_deviation(x_next_trajectory)
+    denoised_deviation = trajectory_deviation(denoised_trajectory)
+    print(denoised_deviation.shape, sampling_deviation.shape)
     return x_next
 
 #----------------------------------------------------------------------------
