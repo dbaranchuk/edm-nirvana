@@ -306,6 +306,9 @@ def main(network_pkl, outdir, subdirs, seeds, max_batch_size, device=torch.devic
     # Loop over batches.
     dist.print0(f'Generating {len(seeds)} images to "{outdir}"...')
     for class_idx in tqdm.tqdm(rank_classes, unit='batch', disable=(dist.get_rank() != 0)):
+        if class_idx not in list(range(990, 1000, 1)):
+            continue
+
         torch.distributed.barrier()
         batch_size = max_batch_size
         if batch_size == 0:
@@ -343,12 +346,13 @@ def main(network_pkl, outdir, subdirs, seeds, max_batch_size, device=torch.devic
         torch.save(sampling_deviation, os.path.join(image_dir, "sampling_deviation.pt"))
         torch.save(denoised_deviation, os.path.join(image_dir, "denoised_deviation.pt"))
 
+    # Done.
+    torch.distributed.barrier()
+
     # Copy images to nirvana snapshot path
     if dist.get_rank() == 0:
         nirvana_utils.copy_out_to_snapshot(outdir)
 
-    # Done.
-    torch.distributed.barrier()
     dist.print0('Done.')
 
 #----------------------------------------------------------------------------
