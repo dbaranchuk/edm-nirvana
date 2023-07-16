@@ -353,6 +353,7 @@ def main(network_pkl, outdir, subdirs, seeds, max_batch_size, device=torch.devic
     if dist.get_rank() == 0:
         nirvana_utils.copy_out_to_snapshot(outdir)
 
+    torch.distributed.barrier()
     dist.print0('Done.')
 
 #----------------------------------------------------------------------------
