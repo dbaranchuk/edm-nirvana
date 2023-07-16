@@ -306,8 +306,8 @@ def main(network_pkl, outdir, subdirs, seeds, max_batch_size, device=torch.devic
     # Loop over batches.
     dist.print0(f'Generating {len(seeds)} images to "{outdir}"...')
     for class_idx in tqdm.tqdm(rank_classes, unit='batch', disable=(dist.get_rank() != 0)):
-        # if class_idx not in list(range(990, 1000, 1)):
-        #     continue
+        if class_idx not in list(range(992, 1000, 1)):
+            continue
 
         torch.distributed.barrier()
         batch_size = max_batch_size
