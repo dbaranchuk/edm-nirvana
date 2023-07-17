@@ -300,7 +300,7 @@ def main(network_pkl, outdir, subdirs, seeds, max_batch_size, device=torch.devic
     if dist.get_rank() == 0:
         torch.distributed.barrier()
 
-    seeds = list(range(0, max_batch_size, 1))
+    assert len(seeds) == max_batch_size
     rank_classes = list(range(dist.get_rank(), net.label_dim, dist.get_world_size()))
 
     # Loop over batches.
