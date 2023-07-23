@@ -35,10 +35,54 @@ def trajectory_deviation(trajectory):
     direction = (trajectory - start).type(torch.float64) # [BxTx(C*H*W)]
     
     dots = (direction * line).sum(-1, keepdim=True) # [BxTx1]
-    proj = dots / line.norm(dim=-1, keepdim=True) ** 2 # [Bx1x1]
+    proj = dots / line.norm(dim=-1, keepdim=True) ** 2 # [BxTx(C*H*W)]
     proj = proj.clamp(0, 1) # for correct distance to the segment
     dist = torch.linalg.norm(proj * line - direction, dim=-1) 
     return dist
+
+
+#----------------------------------------------------------------------------
+# Forward EDM sampler
+
+def edm_forward_sampler(net, img, class_labels, num_steps=100, sigma_min=0.002, sigma_max=80, rho=7):
+    # Adjust noise levels based on what's supported by the network.
+    sigma_min = max(sigma_min, net.sigma_min)
+    sigma_max = min(sigma_max, net.sigma_max)
+
+    # Time step discretization.
+    step_indices = torch.arange(num_steps, dtype=torch.float64, device=img.device)
+    t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
+    t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
+    
+    # Main sampling loop.
+    x_next = (img * 2 - 1).to(torch.float64)
+    x_next_trajectory = [x_next * 0.5 + 0.5]
+    denoised_trajectory = [x_next * 0.5 + 0.5]
+    
+    for i, (t_cur, t_next) in tqdm.tqdm(list(reversed(list(enumerate(zip(t_steps[1:], t_steps[:-1]))))), unit='step'): # 0, ..., N-1
+        x_cur = x_next
+
+        # Euler step.
+        t_used = t_cur if i < num_steps - 1 else torch.tensor(sigma_min, device=img.device)
+        denoised = net(x_cur, t_used, class_labels).to(torch.float64)
+        denoised_trajectory.append(denoised * 0.5 + 0.5)
+        
+        d_cur = (x_cur - denoised) / t_used
+        x_next = x_cur + (t_next - t_used) * d_cur
+
+        # Apply 2nd order correction.
+        if i < num_steps - 1:
+            denoised = net(x_next, t_next, class_labels).to(torch.float64)
+            d_prime = (x_next - denoised) / t_next
+            x_next = x_cur + (t_next - t_used) * (0.5 * d_cur + 0.5 * d_prime)
+        x_next_trajectory.append(x_next * 0.5 + 0.5)
+
+    x_next_trajectory = torch.stack(x_next_trajectory)
+    denoised_trajectory = torch.stack(denoised_trajectory)
+
+    sampling_deviation = trajectory_deviation(x_next_trajectory)
+    denoised_deviation = trajectory_deviation(denoised_trajectory)
+    return x_next, sampling_deviation.cpu().float(), denoised_deviation.cpu().float()
 
 
 #----------------------------------------------------------------------------
@@ -59,12 +103,11 @@ def edm_sampler(
     t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
 
     # Main sampling loop.
-    x_next_trajectory = []
+    x_next = latents.to(torch.float64) * t_steps[0]
+    x_next_trajectory = [x_next * 0.5 + 0.5]
     denoised_trajectory = []
 
-    x_next = latents.to(torch.float64) * t_steps[0]
     for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])): # 0, ..., N-1
-        x_next_trajectory.append(x_next)
         x_cur = x_next
 
         # Increase noise temporarily.
@@ -74,7 +117,7 @@ def edm_sampler(
 
         # Euler step.
         denoised = net(x_hat, t_hat, class_labels).to(torch.float64)
-        denoised_trajectory.append(denoised)
+        denoised_trajectory.append(denoised * 0.5 + 0.5)
 
         d_cur = (x_hat - denoised) / t_hat
         x_next = x_hat + (t_next - t_hat) * d_cur
@@ -85,13 +128,15 @@ def edm_sampler(
             d_prime = (x_next - denoised) / t_next
             x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
 
-    x_next_trajectory.append(x_next)
+        x_next_trajectory.append(x_next * 0.5 + 0.5)
+
+    denoised_trajectory.append(x_next * 0.5 + 0.5)
     x_next_trajectory = torch.stack(x_next_trajectory)
     denoised_trajectory = torch.stack(denoised_trajectory)
 
     sampling_deviation = trajectory_deviation(x_next_trajectory)
     denoised_deviation = trajectory_deviation(denoised_trajectory)
-    return x_next, sampling_deviation.cpu(), denoised_deviation.cpu()
+    return x_next, sampling_deviation.cpu().float(), denoised_deviation.cpu().float()
 
 #----------------------------------------------------------------------------
 # Generalized ablation sampler, representing the superset of all sampling
