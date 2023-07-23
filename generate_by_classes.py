@@ -31,10 +31,10 @@ def trajectory_deviation(trajectory):
     trajectory = trajectory.permute(1, 0, 2) # [BxTx(C*H*W)]
     start, end = trajectory[:, :1], trajectory[:, -1:]
     
-    line = (start - end).type(torch.float64)
-    direction = (trajectory - end).type(torch.float64)
+    line = (end - start).type(torch.float64) # [Bx1x(C*H*W)]
+    direction = (trajectory - start).type(torch.float64) # [BxTx(C*H*W)]
     
-    dots = torch.bmm(direction, line.permute(0, 2, 1)) # [BxTx1]
+    dots = (direction * line).sum(-1) # [BxTx1]
     proj = dots / line.norm(dim=-1, keepdim=True) ** 2 # [Bx1x1]
     proj = proj.clamp(0, 1) # for correct distance to the segment
     dist = torch.linalg.norm(proj * line - direction, dim=-1) 
@@ -343,7 +343,7 @@ def main(network_pkl, outdir, subdirs, seeds, max_batch_size, device=torch.devic
             else:
                 PIL.Image.fromarray(image_np, 'RGB').save(image_path)
         
-        torch.save(latents, os.path.join(image_dir, f"latents_{max(seeds)}.pt"))
+        torch.save(latents.cpu(), os.path.join(image_dir, f"latents_{max(seeds)}.pt"))
         torch.save(sampling_deviation, os.path.join(image_dir, f"sampling_deviation_{max(seeds)}.pt"))
         torch.save(denoised_deviation, os.path.join(image_dir, f"denoised_deviation_{max(seeds)}.pt"))
 
