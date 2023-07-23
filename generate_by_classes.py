@@ -34,7 +34,7 @@ def trajectory_deviation(trajectory):
     line = (end - start).type(torch.float64) # [Bx1x(C*H*W)]
     direction = (trajectory - start).type(torch.float64) # [BxTx(C*H*W)]
     
-    dots = (direction * line).sum(-1) # [BxTx1]
+    dots = (direction * line).sum(-1, keepdim=True) # [BxTx1]
     proj = dots / line.norm(dim=-1, keepdim=True) ** 2 # [Bx1x1]
     proj = proj.clamp(0, 1) # for correct distance to the segment
     dist = torch.linalg.norm(proj * line - direction, dim=-1) 
