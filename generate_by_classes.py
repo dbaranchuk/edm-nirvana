@@ -303,20 +303,21 @@ def main(network_pkl, outdir, subdirs, seeds, max_batch_size, device=torch.devic
     assert len(seeds) == max_batch_size
     rank_classes = list(range(dist.get_rank(), net.label_dim, dist.get_world_size()))
 
+    # Pick latents.
+    rnd = StackedRandomGenerator(device, seeds)
+    latents = rnd.randn([max_batch_size, net.img_channels, net.img_resolution, net.img_resolution], device=device)
+    if dist.get_rank() == 0:
+        torch.save(latents.cpu(), os.path.join(outdir, f"latents_{max(seeds)}.pt"))
+
     # Loop over batches.
     dist.print0(f'Generating {len(seeds)} images to "{outdir}"...')
     for class_idx in tqdm.tqdm(rank_classes, unit='batch', disable=(dist.get_rank() != 0)):
-        # if class_idx not in list(range(992, 1000, 1)):
-        #     continue
-
         torch.distributed.barrier()
         batch_size = max_batch_size
         if batch_size == 0:
             continue
 
-        # Pick latents and labels.
-        rnd = StackedRandomGenerator(device, seeds)
-        latents = rnd.randn([batch_size, net.img_channels, net.img_resolution, net.img_resolution], device=device)
+        # Pick labels.
         class_labels = None
         if net.label_dim:
             labels = rnd.randint(net.label_dim, size=[batch_size], device=device)
@@ -343,7 +344,6 @@ def main(network_pkl, outdir, subdirs, seeds, max_batch_size, device=torch.devic
             else:
                 PIL.Image.fromarray(image_np, 'RGB').save(image_path)
         
-        torch.save(latents.cpu(), os.path.join(image_dir, f"latents_{max(seeds)}.pt"))
         torch.save(sampling_deviation, os.path.join(image_dir, f"sampling_deviation_{max(seeds)}.pt"))
         torch.save(denoised_deviation, os.path.join(image_dir, f"denoised_deviation_{max(seeds)}.pt"))
 
