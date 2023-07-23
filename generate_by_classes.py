@@ -307,6 +307,7 @@ def main(network_pkl, outdir, subdirs, seeds, max_batch_size, device=torch.devic
     rnd = StackedRandomGenerator(device, seeds)
     latents = rnd.randn([max_batch_size, net.img_channels, net.img_resolution, net.img_resolution], device=device)
     if dist.get_rank() == 0:
+        os.makedirs(outdir, exist_ok=True)
         torch.save(latents.cpu(), os.path.join(outdir, f"latents_{max(seeds)}.pt"))
 
     # Loop over batches.
