@@ -21,6 +21,70 @@ from torch_utils import distributed as dist
 from training import nirvana_utils
 
 #----------------------------------------------------------------------------
+# Trajectory deviation
+
+def trajectory_deviation(trajectory):
+    """ L2 distance from the x_t point to the line [x_T, x_0] """
+    # trajectory [TxBxCxHxW]
+    trajectory = trajectory.flatten(start_dim=2) # [TxBx(C*H*W)]
+    trajectory = trajectory.permute(1, 0, 2) # [BxTx(C*H*W)]
+    start, end = trajectory[:, :1], trajectory[:, -1:]
+    
+    line = (end - start).type(torch.float64) # [Bx1x(C*H*W)]
+    direction = (trajectory - start).type(torch.float64) # [BxTx(C*H*W)]
+    
+    dots = (direction * line).sum(-1, keepdim=True) # [BxTx1]
+    proj = dots / line.norm(dim=-1, keepdim=True) ** 2 # [BxTx(C*H*W)]
+    proj = proj.clamp(0, 1) # for correct distance to the segment
+    dist = torch.linalg.norm(proj * line - direction, dim=-1) 
+    return dist
+
+
+#----------------------------------------------------------------------------
+# Forward EDM sampler
+
+def edm_forward_sampler(net, img, class_labels, num_steps=100, sigma_min=0.002, sigma_max=80, rho=7):
+    # Adjust noise levels based on what's supported by the network.
+    sigma_min = max(sigma_min, net.sigma_min)
+    sigma_max = min(sigma_max, net.sigma_max)
+
+    # Time step discretization.
+    step_indices = torch.arange(num_steps, dtype=torch.float64, device=img.device)
+    t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
+    t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
+    
+    # Main sampling loop.
+    x_next = (img * 2 - 1).to(torch.float64)
+    x_next_trajectory = [x_next * 0.5 + 0.5]
+    denoised_trajectory = [x_next * 0.5 + 0.5]
+    
+    for i, (t_cur, t_next) in tqdm.tqdm(list(reversed(list(enumerate(zip(t_steps[1:], t_steps[:-1]))))), unit='step'): # 0, ..., N-1
+        x_cur = x_next
+
+        # Euler step.
+        t_used = t_cur if i < num_steps - 1 else torch.tensor(sigma_min, device=img.device)
+        denoised = net(x_cur, t_used, class_labels).to(torch.float64)
+        denoised_trajectory.append(denoised * 0.5 + 0.5)
+        
+        d_cur = (x_cur - denoised) / t_used
+        x_next = x_cur + (t_next - t_used) * d_cur
+
+        # Apply 2nd order correction.
+        if i < num_steps - 1:
+            denoised = net(x_next, t_next, class_labels).to(torch.float64)
+            d_prime = (x_next - denoised) / t_next
+            x_next = x_cur + (t_next - t_used) * (0.5 * d_cur + 0.5 * d_prime)
+        x_next_trajectory.append(x_next * 0.5 + 0.5)
+
+    x_next_trajectory = torch.stack(x_next_trajectory)
+    denoised_trajectory = torch.stack(denoised_trajectory)
+
+    sampling_deviation = trajectory_deviation(x_next_trajectory)
+    denoised_deviation = trajectory_deviation(denoised_trajectory)
+    return x_next, sampling_deviation.cpu().float(), denoised_deviation.cpu().float()
+
+
+#----------------------------------------------------------------------------
 # Proposed EDM sampler (Algorithm 2).
 
 def edm_sampler(
@@ -39,6 +103,9 @@ def edm_sampler(
 
     # Main sampling loop.
     x_next = latents.to(torch.float64) * t_steps[0]
+    x_next_trajectory = [x_next * 0.5 + 0.5]
+    denoised_trajectory = []
+
     for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])): # 0, ..., N-1
         x_cur = x_next
 
@@ -49,6 +116,8 @@ def edm_sampler(
 
         # Euler step.
         denoised = net(x_hat, t_hat, class_labels).to(torch.float64)
+        denoised_trajectory.append(denoised * 0.5 + 0.5)
+
         d_cur = (x_hat - denoised) / t_hat
         x_next = x_hat + (t_next - t_hat) * d_cur
 
@@ -58,7 +127,15 @@ def edm_sampler(
             d_prime = (x_next - denoised) / t_next
             x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
 
-    return x_next
+        x_next_trajectory.append(x_next * 0.5 + 0.5)
+
+    denoised_trajectory.append(x_next * 0.5 + 0.5)
+    x_next_trajectory = torch.stack(x_next_trajectory)
+    denoised_trajectory = torch.stack(denoised_trajectory)
+
+    sampling_deviation = trajectory_deviation(x_next_trajectory)
+    denoised_deviation = trajectory_deviation(denoised_trajectory)
+    return x_next, sampling_deviation.cpu().float(), denoised_deviation.cpu().float()
 
 #----------------------------------------------------------------------------
 # Generalized ablation sampler, representing the superset of all sampling
@@ -284,12 +361,7 @@ def main(network_pkl, outdir, subdirs, seeds, class_idx, max_batch_size, device=
         latents = rnd.randn([batch_size, net.img_channels, net.img_resolution, net.img_resolution], device=device)
         class_labels = None
         if net.label_dim:
-            # TODO: add probs to randint according to dinov2 distr
-            if path_to_label_distr:
-                label_distr = torch.from_numpy(np.load(path_to_label_distr)).to(torch.float)
-                labels = torch.multinomial(label_distr, batch_size, replacement=True)
-            else:
-                labels = rnd.randint(net.label_dim, size=[batch_size], device=device)
+            labels = rnd.randint(net.label_dim, size=[batch_size], device=device)
             class_labels = torch.eye(net.label_dim, device=device)[labels]
         if class_idx is not None:
             class_labels[:, :] = 0
@@ -299,7 +371,7 @@ def main(network_pkl, outdir, subdirs, seeds, class_idx, max_batch_size, device=
         sampler_kwargs = {key: value for key, value in sampler_kwargs.items() if value is not None}
         have_ablation_kwargs = any(x in sampler_kwargs for x in ['solver', 'discretization', 'schedule', 'scaling'])
         sampler_fn = ablation_sampler if have_ablation_kwargs else edm_sampler
-        images = sampler_fn(net, latents, class_labels, randn_like=rnd.randn_like, **sampler_kwargs)
+        images, sampling_deviation, denoised_deviation = sampler_fn(net, latents, class_labels, randn_like=rnd.randn_like, **sampler_kwargs)
 
         # Save images.
         images_np = (images * 127.5 + 128).clip(0, 255).to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
@@ -311,6 +383,11 @@ def main(network_pkl, outdir, subdirs, seeds, class_idx, max_batch_size, device=
                 PIL.Image.fromarray(image_np[:, :, 0], 'L').save(image_path)
             else:
                 PIL.Image.fromarray(image_np, 'RGB').save(image_path)
+        
+        torch.save(latents.cpu(), os.path.join(image_dir, f"latents_{min(batch_seeds)}_{max(batch_seeds)}.pt"))
+        torch.save(labels.cpu(), os.path.join(image_dir, f"labels_{min(batch_seeds)}_{max(batch_seeds)}.pt"))
+        torch.save(sampling_deviation, os.path.join(image_dir, f"sampling_deviation_{min(batch_seeds)}_{max(batch_seeds)}.pt"))
+        torch.save(denoised_deviation, os.path.join(image_dir, f"denoised_deviation_{min(batch_seeds)}_{max(batch_seeds)}.pt"))
 
     # Copy images to nirvana snapshot path
     if dist.get_rank() == 0:
