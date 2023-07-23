@@ -343,8 +343,9 @@ def main(network_pkl, outdir, subdirs, seeds, max_batch_size, device=torch.devic
             else:
                 PIL.Image.fromarray(image_np, 'RGB').save(image_path)
         
-        torch.save(sampling_deviation, os.path.join(image_dir, "sampling_deviation.pt"))
-        torch.save(denoised_deviation, os.path.join(image_dir, "denoised_deviation.pt"))
+        torch.save(latents, os.path.join(image_dir, f"latents_{max(seeds)}.pt"))
+        torch.save(sampling_deviation, os.path.join(image_dir, f"sampling_deviation_{max(seeds)}.pt"))
+        torch.save(denoised_deviation, os.path.join(image_dir, f"denoised_deviation_{max(seeds)}.pt"))
 
     # Done.
     torch.distributed.barrier()
