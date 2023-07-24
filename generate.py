@@ -389,6 +389,8 @@ def main(network_pkl, outdir, subdirs, seeds, class_idx, max_batch_size, device=
         torch.save(sampling_deviation, os.path.join(image_dir, f"sampling_deviation_{min(batch_seeds)}_{max(batch_seeds)}.pt"))
         torch.save(denoised_deviation, os.path.join(image_dir, f"denoised_deviation_{min(batch_seeds)}_{max(batch_seeds)}.pt"))
 
+    torch.distributed.barrier()
+    
     # Copy images to nirvana snapshot path
     if dist.get_rank() == 0:
         nirvana_utils.copy_out_to_snapshot(outdir)
